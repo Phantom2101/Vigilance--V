@@ -1,81 +1,58 @@
 # face_manager.py
-import os
-import cv2
-import json
-import numpy as np
 from pathlib import Path
+import cv2
+from deepface import DeepFace
 
+# Dataset where captured face images are stored
 DATASET_DIR = Path("dataset")
-MODELS_DIR = Path("models")
-LABELS_FILE = MODELS_DIR / "labels.json"
-MODEL_FILE = MODELS_DIR / "lbph_model.yml"
-
-# Ensure directories exist
 DATASET_DIR.mkdir(parents=True, exist_ok=True)
+
+# Folder where DeepFace stores its internal representations
+MODELS_DIR = Path("models")
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-def get_face_detector():
-    """Return a Haar Cascade face detector."""
-    return cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-# ... (rest of the code: save_face_image, gather_dataset, train_lbph_model, etc.)
-
-
-def save_face_image(person_name: str, img, idx:int):
+def save_face_image(person_name: str, face_image, index: int):
+    """
+    Save a single cropped face image for registration.
+    """
     person_dir = DATASET_DIR / person_name
     person_dir.mkdir(parents=True, exist_ok=True)
-    path = person_dir / f"{person_name}_{idx:03d}.jpg"
-    cv2.imwrite(str(path), img)
-    return str(path)
+    filename = person_dir / f"{person_name}_{index:03d}.jpg"
+    cv2.imwrite(str(filename), face_image)
+    print(f"[INFO] Saved {filename}")
 
-def gather_dataset():
-    """Return (images, labels, label_to_name) for training."""
-    images = []
-    labels = []
-    label_to_name = {}
-    name_to_label = {}
-    current_label = 0
 
-    for person_dir in sorted(DATASET_DIR.iterdir()):
-        if not person_dir.is_dir():
-            continue
-        name = person_dir.name
-        name_to_label[name] = current_label
-        label_to_name[str(current_label)] = name
+def train_deepface_model():
+    """
+    DeepFace doesn't 'train' a model like LBPH does.
+    Instead, it builds an internal embeddings index for fast lookup.
 
-        for img_path in person_dir.glob("*.jpg"):
-            img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                continue
-            images.append(img)
-            labels.append(current_label)
-        current_label += 1
+    We trigger it once so that DeepFace builds representations_facenet.pkl
+    inside the dataset directory.
+    """
+    if not DATASET_DIR.exists() or not any(DATASET_DIR.rglob("*.jpg")):
+        raise RuntimeError("No registered face images found in dataset/.")
 
-    return images, labels, label_to_name
+    print("[INFO] Building DeepFace embeddings database...")
 
-def train_lbph_model(min_samples=10):
-    images, labels, label_to_name = gather_dataset()
-    if len(images) == 0 or len(labels) < min_samples:
-        raise ValueError(f"Not enough samples to train (found {len(labels)}). Capture more images per person.")
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train(images, np.array(labels))
-    recognizer.write(str(MODEL_FILE))
+    # DeepFace.find() automatically builds or refreshes embeddings
+    # for all faces in dataset/
+    sample_image = next(DATASET_DIR.rglob("*.jpg"), None)
+    DeepFace.find(
+        img_path=str(sample_image),
+        db_path=str(DATASET_DIR),
+        model_name="Facenet",
+        enforce_detection=False
+    )
 
-    # save label mapping
-    with open(LABELS_FILE, "w") as f:
-        json.dump(label_to_name, f)
-    return True
+    print("[INFO] Face database built successfully.")
 
-def load_model():
-    if not MODEL_FILE.exists() or not LABELS_FILE.exists():
-        return None, {}
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.read(str(MODEL_FILE))
-    with open(LABELS_FILE, "r") as f:
-        label_to_name = json.load(f)
-    # keys are strings in JSON; convert to int-keyed dict for convenience
-    return recognizer, {int(k): v for k, v in label_to_name.items()}
 
 def list_registered_people():
-    people = [p.name for p in DATASET_DIR.iterdir() if p.is_dir()]
-    return sorted(people)
+    """
+    Return all registered person names.
+    """
+    if not DATASET_DIR.exists():
+        return []
+    return sorted([d.name for d in DATASET_DIR.iterdir() if d.is_dir()])
